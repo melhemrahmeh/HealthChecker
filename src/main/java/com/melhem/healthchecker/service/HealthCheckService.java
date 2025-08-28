@@ -3,6 +3,8 @@ package com.melhem.healthchecker.service;
 import com.melhem.healthchecker.model.MonitoredService;
 import com.melhem.healthchecker.model.ServiceStatus;
 import com.melhem.healthchecker.dao.ServiceStatusDao;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
@@ -14,6 +16,8 @@ import java.time.LocalDateTime;
 @Service
 public class HealthCheckService {
 
+    private static final Logger logger = LogManager.getLogger(HealthCheckService.class);
+
     private final ServiceStatusDao statusDao;
     private final RestTemplate restTemplate = new RestTemplate();
 
@@ -24,39 +28,57 @@ public class HealthCheckService {
     public ServiceStatus check(MonitoredService service) {
         boolean healthy = false;
         String message = "";
-        System.out.println("Checking service: " + service.getName() + " [" + service.getType() + "] at " + LocalDateTime.now());
+        logger.info("Checking service: {} [{}] at {}", service.getName(), service.getType(), LocalDateTime.now());
 
         try {
             switch (service.getType()) {
-
                 case HTTP -> {
                     var response = restTemplate.getForEntity(service.getAddress(), String.class);
-                    healthy = response.getStatusCode().is2xxSuccessful();
-                    message = "HTTP status: " + response.getStatusCode();
+                    if (response.getStatusCode().is2xxSuccessful()) {
+                        healthy = true;
+                        message = "HTTP OK, status: " + response.getStatusCode();
+                    } else {
+                        healthy = false;
+                        message = "HTTP FAILED, status: " + response.getStatusCode();
+                    }
                 }
 
                 case TCP -> {
                     try (Socket socket = new Socket(service.getAddress(), service.getPort())) {
                         healthy = true;
                         message = "TCP OK (connected to " + service.getAddress() + ":" + service.getPort() + ")";
+                    } catch (Exception e) {
+                        healthy = false;
+                        message = "TCP FAILED: " + e.getMessage();
                     }
                 }
 
                 case DATABASE -> {
-                    // Example: JDBC URL with username/password
-                    String jdbcUrl = service.getAddress(); // should include user/pass in URL or add extra fields
-                    try (Connection conn = DriverManager.getConnection(jdbcUrl)) {
-                        healthy = conn.isValid(2);
-                        message = healthy ? "DB OK" : "DB connection failed";
+                    try (Connection conn = DriverManager.getConnection(service.getAddress())) {
+                        if (conn.isValid(2)) {
+                            healthy = true;
+                            message = "DB OK";
+                        } else {
+                            healthy = false;
+                            message = "DB connection failed";
+                        }
+                    } catch (Exception e) {
+                        healthy = false;
+                        message = "DB ERROR: " + e.getMessage();
                     }
+                }
+
+                default -> {
+                    healthy = false;
+                    message = "Unknown service type";
                 }
             }
         } catch (Exception e) {
             healthy = false;
-            message = "Error: " + e.getMessage();
+            message = "Unexpected error: " + e.getMessage();
         }
 
-        System.out.println("Service check result: " + service.getName() + " => " + message);
+        logger.info("Service check result: {} => {}", service.getName(), message);
 
         ServiceStatus status = new ServiceStatus(service, healthy, message);
         return statusDao.save(status);
